@@ -40,9 +40,8 @@ jobs:
         run: |
           cd android
           chmod +x ./gradlew
-          # 4GB RAM limit: The sweet spot to prevent "Java heap space" crashes on GitHub
-          export GRADLE_OPTS="-Xmx4096m -Dorg.gradle.daemon=false -Dorg.gradle.workers.max=2"
-          ./gradlew assembleDebug --no-daemon
+          export GRADLE_OPTS="-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dorg.gradle.daemon=false -Dorg.gradle.parallel=false -Dorg.gradle.workers.max=1"
+          ./gradlew assembleDebug --no-daemon --max-workers=1
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
