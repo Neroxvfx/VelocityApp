@@ -18,25 +18,33 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install EAS CLI directly
-        run: npm install -g eas-cli
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
 
       - name: Install dependencies
         run: npm install
 
       - name: Patch FFmpeg Kit
         run: |
-          echo "Patching FFmpeg Kit build.gradle..."
-          sed -i 's/com\.arthenica/dev.ffmpegkit-maintained/g' node_modules/ffmpeg-kit-react-native/android/build.gradle
-          sed -i 's/6\.0-2/6.0.3/g' node_modules/ffmpeg-kit-react-native/android/build.gradle
-          echo "Patch applied successfully."
+          echo "Patching FFmpeg Kit..."
+          sed -i 's/implementation.*com\.arthenica.*/implementation '\''dev.ffmpegkit-maintained:ffmpeg-kit-https:6.0.3'\''/' node_modules/ffmpeg-kit-react-native/android/build.gradle
+          echo "Patch applied!"
+          cat node_modules/ffmpeg-kit-react-native/android/build.gradle | grep "implementation.*ffmpeg"
 
-      - name: Link Expo Project
-        run: npx eas init --account calnrxs-team --non-interactive
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      - name: Generate Android files
+        run: npx expo prebuild --platform android --clean
 
-      - name: Build with EAS
-        run: eas build --platform android --profile preview --non-interactive
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      - name: Build APK with Gradle
+        run: |
+          cd android
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Velocity-Android-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
