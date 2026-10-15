@@ -32,7 +32,6 @@ jobs:
           echo "Patching FFmpeg Kit..."
           sed -i 's/implementation.*com\.arthenica.*/implementation '\''dev.ffmpegkit-maintained:ffmpeg-kit-https:6.0.3'\''/' node_modules/ffmpeg-kit-react-native/android/build.gradle
           echo "Patch applied!"
-          cat node_modules/ffmpeg-kit-react-native/android/build.gradle | grep "implementation.*ffmpeg"
 
       - name: Generate Android files
         run: npx expo prebuild --platform android --clean
@@ -41,6 +40,8 @@ jobs:
         run: |
           cd android
           chmod +x ./gradlew
+          # 4GB RAM limit: The sweet spot to prevent "Java heap space" crashes on GitHub
+          export GRADLE_OPTS="-Xmx4096m -Dorg.gradle.daemon=false -Dorg.gradle.workers.max=2"
           ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK
