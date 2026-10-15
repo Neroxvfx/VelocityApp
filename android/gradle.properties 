@@ -1,0 +1,5 @@
+org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m
+android.enableJetifier=false
+android.useAndroidX=true
+org.gradle.parallel=false
+org.gradle.workers.max=1
