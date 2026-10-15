@@ -21,6 +21,11 @@ jobs:
       - name: Install EAS CLI directly
         run: npm install -g eas-cli
 
+      - name: Link Expo Project
+        run: npx eas init --account calnrxs-team --non-interactive
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
       - name: Install dependencies
         run: npm install
 
