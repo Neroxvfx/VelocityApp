@@ -26,6 +26,9 @@
           "photosPermission": "Velocity needs access to your gallery to remap videos."
         }
       ]
-    ]
+    ],
+    "cli": {
+      "appVersionSource": "remote"
+    }
   }
 }
