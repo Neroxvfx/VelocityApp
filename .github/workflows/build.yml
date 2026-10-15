@@ -24,6 +24,20 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Patch FFmpeg Kit
+        run: |
+          node -e "
+          const fs = require('fs');
+          const path = 'node_modules/ffmpeg-kit-react-native/android/build.gradle';
+          let content = fs.readFileSync(path, 'utf8');
+          content = content.replace(
+            /implementation 'com\.arthenica:ffmpeg-kit-'.*$/m,
+            \"implementation 'dev.ffmpegkit-maintained:ffmpeg-kit-https:6.0.3'\"
+          );
+          fs.writeFileSync(path, content);
+          console.log('Successfully patched FFmpeg Kit to use maintained fork');
+          "
+
       - name: Link Expo Project
         run: npx eas init --account calnrxs-team --non-interactive
         env:
