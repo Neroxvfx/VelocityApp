@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "Velocity",
+    "slug": "velocity",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "com.velocity.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#ffffff"
+      }
+    },
+    "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 24
+          }
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Velocity needs access to your gallery to remap videos."
+        }
+      ]
+    ]
+  }
+}
