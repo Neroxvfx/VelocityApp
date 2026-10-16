@@ -9,10 +9,13 @@ import {
   Alert,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import { Video, ResizeMode } from 'expo-av';
 import { FFmpegKit, FFprobeKit, ReturnCode } from 'ffmpeg-kit-react-native';
 
 export default function App() {
   const [video, setVideo] = useState(null);
+  const [resultUri, setResultUri] = useState(null);
+  const [resultKey, setResultKey] = useState(0);
   const [log, setLog] = useState([]);
   const [busy, setBusy] = useState(false);
 
@@ -28,6 +31,7 @@ export default function App() {
       });
       if (!result.canceled) {
         setVideo(result.assets[0]);
+        setResultUri(null);
         setLog([]);
       }
     } catch (e) {
@@ -42,6 +46,7 @@ export default function App() {
     if (!video || busy) return;
     setBusy(true);
     setLog([]);
+    setResultUri(null);
     try {
       addLog('1) Checking FFmpeg version...');
       const v = await FFmpegKit.execute('-version');
@@ -70,7 +75,9 @@ export default function App() {
       const info = await probe.getMediaInformation();
       const dur = info.getDuration();
       addLog('New length: ' + dur + ' seconds (original: ' + seconds + ')');
-      addLog('If the new length is about half of the original, FFmpeg works!');
+
+      setResultUri('file://' + output);
+      setResultKey((k) => k + 1);
     } catch (e) {
       addLog('Error: ' + String(e));
     }
@@ -89,18 +96,23 @@ export default function App() {
         style={[styles.button, styles.second, (!video || busy) && styles.disabled]}
         onPress={testFFmpeg}
       >
-        <Text style={styles.buttonText}>{busy ? 'Working...' : 'Test FFmpeg'}</Text>
+        <Text style={styles.buttonText}>{busy ? 'Working...' : 'Test FFmpeg (2x)'}</Text>
       </TouchableOpacity>
 
       <ScrollView style={styles.info}>
         {video ? (
           <View>
-            <Text style={styles.line}>Name: {video.fileName || 'unknown'}</Text>
-            <Text style={styles.line}>Size: {mb} MB</Text>
             <Text style={styles.line}>
-              Resolution: {video.width} x {video.height}
+              {mb} MB, {video.width} x {video.height}, {seconds} seconds
             </Text>
-            <Text style={styles.line}>Length: {seconds} seconds</Text>
+            <Text style={styles.label}>Original</Text>
+            <Video
+              style={styles.player}
+              source={{ uri: video.uri }}
+              useNativeControls
+              resizeMode={ResizeMode.CONTAIN}
+              isLooping
+            />
           </View>
         ) : (
           <Text style={styles.line}>No video picked yet.</Text>
@@ -111,6 +123,22 @@ export default function App() {
             {line}
           </Text>
         ))}
+
+        {resultUri ? (
+          <View>
+            <Text style={styles.label}>Result</Text>
+            <Video
+              key={String(resultKey)}
+              style={styles.player}
+              source={{ uri: resultUri }}
+              useNativeControls
+              resizeMode={ResizeMode.CONTAIN}
+              isLooping
+            />
+          </View>
+        ) : null}
+
+        <View style={{ height: 60 }} />
       </ScrollView>
 
       <StatusBar style="light" />
@@ -156,6 +184,20 @@ const styles = StyleSheet.create({
     color: '#ddd',
     fontSize: 16,
     marginBottom: 10,
+  },
+  label: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginTop: 10,
+    marginBottom: 8,
+  },
+  player: {
+    width: '100%',
+    height: 240,
+    backgroundColor: '#000',
+    borderRadius: 8,
+    marginBottom: 14,
   },
   logLine: {
     color: '#facc15',
