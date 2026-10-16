@@ -50,10 +50,10 @@ jobs:
           cd android
           chmod +x ./gradlew
           export GRADLE_OPTS="-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dorg.gradle.daemon=false -Dorg.gradle.parallel=false -Dorg.gradle.workers.max=1"
-          ./gradlew assembleDebug --no-daemon --max-workers=1
+          ./gradlew assembleRelease --no-daemon --max-workers=1
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Velocity-Android-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/release/app-release.apk
