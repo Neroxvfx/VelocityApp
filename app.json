@@ -25,6 +25,14 @@
         {
           "photosPermission": "Velocity needs access to your gallery to remap videos."
         }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Velocity needs permission to save the finished video to your gallery.",
+          "savePhotosPermission": "Velocity needs permission to save the finished video to your gallery.",
+          "isAccessMediaLocationEnabled": false
+        }
       ]
     ]
   }
