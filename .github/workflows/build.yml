@@ -31,7 +31,9 @@ jobs:
         run: |
           echo "Patching FFmpeg Kit..."
           sed -i 's/implementation.*com\.arthenica.*/implementation '\''dev.ffmpegkit-maintained:ffmpeg-kit-https:6.0.3'\''/' node_modules/ffmpeg-kit-react-native/android/build.gradle
+          sed -i "/dev.ffmpegkit-maintained:ffmpeg-kit-https:6.0.3/a implementation 'com.arthenica:smart-exception-java:0.2.1'" node_modules/ffmpeg-kit-react-native/android/build.gradle
           echo "Patch applied!"
+          grep -n "implementation" node_modules/ffmpeg-kit-react-native/android/build.gradle
 
       - name: Generate Android files
         run: npx expo prebuild --platform android --clean
