@@ -24,6 +24,7 @@ import {
   saveProject,
 } from './helpers';
 import SettingsFields from './SettingsFields';
+import AudioSection from './AudioSection';
 import { HomeScreen, NewProjectScreen } from './Screens';
 
 export default function App() {
@@ -127,6 +128,7 @@ export default function App() {
       width: String(s.w),
       height: String(s.h),
       clips: [],
+      audios: [],
       created: Date.now(),
     };
     try {
@@ -576,6 +578,17 @@ export default function App() {
               </Text>
             </TouchableOpacity>
           </View>
+        ) : null}
+
+        {project ? (
+          <AudioSection
+            project={project}
+            clip={clip}
+            clipUri={clipUri}
+            change={change}
+            busy={busy || copying}
+            setBusy={setBusy}
+          />
         ) : null}
 
         <View style={{ height: 80 }} />
