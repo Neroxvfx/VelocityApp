@@ -1,5 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Text, View, TouchableOpacity, Alert, Image, ScrollView } from 'react-native';
+import {
+  Text,
+  View,
+  TouchableOpacity,
+  Alert,
+  Image,
+  ScrollView,
+  TextInput,
+} from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as DocumentPicker from 'expo-document-picker';
 import { Audio } from 'expo-av';
@@ -8,10 +16,14 @@ import styles from './styles';
 import { BASE, toPath } from './helpers';
 
 const WAVE_H = 160;
+const SPEED_CHIPS = ['0.5', '1.5', '2'];
 
 export default function AudioSection({ project, clip, clipUri, change, busy, setBusy }) {
   const [playingId, setPlayingId] = useState(null);
   const [waveOpenId, setWaveOpenId] = useState(null);
+  const [speedOpenId, setSpeedOpenId] = useState(null);
+  const [speedText, setSpeedText] = useState('1.5');
+  const [pitchMode, setPitchMode] = useState('keep');
   const [message, setMessage] = useState('');
   const soundRef = useRef(null);
   const audios = project.audios || [];
@@ -70,6 +82,19 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
     }
   };
 
+  const getSampleRate = async (path) => {
+    try {
+      const probe = await FFprobeKit.getMediaInformation(path);
+      const info = await probe.getMediaInformation();
+      const streams = info.getStreams() || [];
+      const a = streams.find((st) => st.getType() === 'audio');
+      const sr = a ? parseInt(a.getSampleRate(), 10) : 0;
+      return sr > 0 ? sr : 44100;
+    } catch (e) {
+      return 44100;
+    }
+  };
+
   const toggleWave = async (a) => {
     if (waveOpenId === a.id) {
       setWaveOpenId(null);
@@ -107,6 +132,75 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
       }));
       setWaveOpenId(a.id);
       setMessage('');
+    } catch (e) {
+      setMessage('Error: ' + String(e));
+    }
+    setBusy(false);
+  };
+
+  const toggleSpeed = (a) => {
+    setSpeedOpenId(speedOpenId === a.id ? null : a.id);
+  };
+
+  const createSpeedCopy = async (a) => {
+    if (busy) return;
+    const sp = parseFloat(String(speedText).replace(',', '.'));
+    if (isNaN(sp) || sp < 0.05 || sp > 50) {
+      Alert.alert('Check speed', 'Speed must be a number from 0.05 to 50.');
+      return;
+    }
+    if (Math.abs(sp - 1) < 0.0001) {
+      Alert.alert('Check speed', 'Speed 1 changes nothing. Type another number.');
+      return;
+    }
+    setBusy(true);
+    setMessage('Changing speed...');
+    try {
+      await stopSound();
+      const inPath = toPath(BASE + project.id + '/' + a.file);
+      let filter;
+      if (pitchMode === 'keep') {
+        // atempo only works between 0.5 and 100, so slow speeds are chained
+        const parts = [];
+        let s = sp;
+        while (s < 0.5) {
+          parts.push('atempo=0.5');
+          s = s / 0.5;
+        }
+        parts.push('atempo=' + s.toFixed(6));
+        filter = parts.join(',');
+      } else {
+        const sr = await getSampleRate(inPath);
+        filter = 'asetrate=' + Math.round(sr * sp) + ',aresample=' + sr;
+      }
+      const stamp = Date.now();
+      const file = 'audio_' + stamp + '.m4a';
+      const outUri = BASE + project.id + '/' + file;
+      const cmd =
+        '-y -i "' + inPath + '" -vn -filter:a "' + filter +
+        '" -c:a aac -b:a 192k "' + toPath(outUri) + '"';
+      const session = await FFmpegKit.execute(cmd);
+      const rc = await session.getReturnCode();
+      if (!ReturnCode.isSuccess(rc)) {
+        try {
+          await FileSystem.deleteAsync(outUri, { idempotent: true });
+        } catch (e) {}
+        const logs = await session.getAllLogsAsString();
+        setMessage('Speed change failed. ' + String(logs).slice(-300));
+        setBusy(false);
+        return;
+      }
+      const dur = await getDuration(toPath(outUri));
+      const label = String(parseFloat(sp.toFixed(3))) + 'x' + (pitchMode === 'keep' ? '' : ' pitch');
+      const item = {
+        id: 'a' + stamp,
+        file: file,
+        name: a.name + ' ' + label,
+        duration: dur,
+      };
+      change((p) => ({ ...p, audios: [...(p.audios || []), item] }));
+      setSpeedOpenId(null);
+      setMessage('Done. New audio added: ' + item.name);
     } catch (e) {
       setMessage('Error: ' + String(e));
     }
@@ -197,6 +291,7 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
         onPress: async () => {
           if (playingId === a.id) await stopSound();
           if (waveOpenId === a.id) setWaveOpenId(null);
+          if (speedOpenId === a.id) setSpeedOpenId(null);
           try {
             await FileSystem.deleteAsync(BASE + project.id + '/' + a.file, { idempotent: true });
           } catch (e) {}
@@ -232,6 +327,12 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
               </Text>
               <Text style={styles.cardInfo}>{(a.duration || 0).toFixed(1)} s</Text>
             </View>
+            <TouchableOpacity style={styles.xcell} onPress={() => removeAudio(a)}>
+              <Text style={styles.xText}>X</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={{ flexDirection: 'row', marginTop: 10 }}>
             <TouchableOpacity
               style={[styles.chip, playingId === a.id && styles.modeActive, { marginBottom: 0 }]}
               onPress={() => togglePlay(a)}
@@ -244,8 +345,11 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
             >
               <Text style={styles.chipText}>Wave</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.xcell} onPress={() => removeAudio(a)}>
-              <Text style={styles.xText}>X</Text>
+            <TouchableOpacity
+              style={[styles.chip, speedOpenId === a.id && styles.modeActive, { marginBottom: 0 }]}
+              onPress={() => toggleSpeed(a)}
+            >
+              <Text style={styles.chipText}>Speed</Text>
             </TouchableOpacity>
           </View>
 
@@ -260,6 +364,49 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
                 resizeMode="stretch"
               />
             </ScrollView>
+          ) : null}
+
+          {speedOpenId === a.id ? (
+            <View style={{ marginTop: 12 }}>
+              <Text style={styles.head}>Speed (0.05 to 50, any number)</Text>
+              <TextInput
+                style={[styles.inputFull, { marginTop: 6 }]}
+                value={speedText}
+                keyboardType="decimal-pad"
+                onChangeText={setSpeedText}
+              />
+              <View style={styles.chipRow}>
+                {SPEED_CHIPS.map((c) => (
+                  <TouchableOpacity
+                    key={c}
+                    style={[styles.chip, speedText === c && styles.modeActive]}
+                    onPress={() => setSpeedText(c)}
+                  >
+                    <Text style={styles.chipText}>{c}x</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <View style={styles.modeRow}>
+                <TouchableOpacity
+                  style={[styles.modeBtn, pitchMode === 'keep' && styles.modeActive]}
+                  onPress={() => setPitchMode('keep')}
+                >
+                  <Text style={styles.modeText}>Keep pitch</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modeBtn, pitchMode === 'change' && styles.modeActive]}
+                  onPress={() => setPitchMode('change')}
+                >
+                  <Text style={styles.modeText}>Change pitch</Text>
+                </TouchableOpacity>
+              </View>
+              <TouchableOpacity
+                style={[styles.button, styles.apply, busy && styles.disabled]}
+                onPress={() => createSpeedCopy(a)}
+              >
+                <Text style={styles.buttonText}>Create new audio</Text>
+              </TouchableOpacity>
+            </View>
           ) : null}
         </View>
       ))}
