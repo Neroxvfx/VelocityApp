@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import {
   StyleSheet,
@@ -8,72 +8,275 @@ import {
   ScrollView,
   TextInput,
   Alert,
+  BackHandler,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
+import * as FileSystem from 'expo-file-system';
 import { Video, ResizeMode } from 'expo-av';
 import { FFmpegKit, FFprobeKit, ReturnCode } from 'ffmpeg-kit-react-native';
 
+const BASE = FileSystem.documentDirectory + 'velocity/projects/';
+const FPS_BUTTONS = ['24', '25', '30', '60'];
+const RES_PRESETS = [
+  { label: '1080x1920', w: '1080', h: '1920' },
+  { label: '720x1280', w: '720', h: '1280' },
+  { label: '1080x1080', w: '1080', h: '1080' },
+  { label: '1920x1080', w: '1920', h: '1080' },
+];
+
+const toPath = (uri) => uri.replace('file://', '');
+
+function checkSettings(fpsText, wText, hText) {
+  const fps = parseFloat(fpsText);
+  const w = parseInt(wText, 10);
+  const h = parseInt(hText, 10);
+  if (isNaN(fps) || fps < 1 || fps > 120) {
+    return { error: 'Frame rate must be a number from 1 to 120.' };
+  }
+  if (isNaN(w) || isNaN(h) || w < 64 || h < 64 || w > 4096 || h > 4096) {
+    return { error: 'Width and height must be numbers from 64 to 4096.' };
+  }
+  return { fps: fps, w: Math.floor(w / 2) * 2, h: Math.floor(h / 2) * 2 };
+}
+
+async function loadProjects() {
+  try {
+    const info = await FileSystem.getInfoAsync(BASE);
+    if (!info.exists) return [];
+    const names = await FileSystem.readDirectoryAsync(BASE);
+    const list = [];
+    for (let i = 0; i < names.length; i++) {
+      try {
+        const txt = await FileSystem.readAsStringAsync(BASE + names[i] + '/project.json');
+        list.push(JSON.parse(txt));
+      } catch (e) {}
+    }
+    list.sort((a, b) => (b.updated || 0) - (a.updated || 0));
+    return list;
+  } catch (e) {
+    return [];
+  }
+}
+
+async function saveProject(p) {
+  await FileSystem.makeDirectoryAsync(BASE + p.id + '/', { intermediates: true });
+  const data = { ...p, updated: Date.now() };
+  await FileSystem.writeAsStringAsync(BASE + p.id + '/project.json', JSON.stringify(data));
+}
+
 export default function App() {
-  const [video, setVideo] = useState(null);
-  const [segs, setSegs] = useState([]);
-  const [mode, setMode] = useState('off');
+  const [screen, setScreen] = useState('home');
+  const [projects, setProjects] = useState([]);
+  const [project, setProject] = useState(null);
+  const dirty = useRef(false);
+
+  const [newName, setNewName] = useState('');
+  const [newFps, setNewFps] = useState('30');
+  const [newW, setNewW] = useState('1080');
+  const [newH, setNewH] = useState('1920');
+
   const [resultUri, setResultUri] = useState(null);
   const [resultKey, setResultKey] = useState(0);
   const [log, setLog] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [copying, setCopying] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
   const addLog = (line) => setLog((old) => [...old, line]);
-  const toPath = (uri) => uri.replace('file://', '');
+
+  useEffect(() => {
+    loadProjects().then(setProjects);
+  }, []);
+
+  // Auto-save the project a moment after any change
+  useEffect(() => {
+    if (!project || !dirty.current) return;
+    const t = setTimeout(() => {
+      saveProject(project).catch(() => {});
+      dirty.current = false;
+    }, 600);
+    return () => clearTimeout(t);
+  }, [project]);
+
+  const change = (fn) => {
+    dirty.current = true;
+    setProject((old) => fn(old));
+  };
+
+  const goHome = async () => {
+    if (busy || copying) {
+      Alert.alert('Please wait', 'Wait until the work is finished.');
+      return;
+    }
+    if (project && dirty.current) {
+      try {
+        await saveProject(project);
+      } catch (e) {}
+      dirty.current = false;
+    }
+    setProject(null);
+    setResultUri(null);
+    setLog([]);
+    setSaved(false);
+    setProjects(await loadProjects());
+    setScreen('home');
+  };
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (screen === 'project') {
+        goHome();
+        return true;
+      }
+      if (screen === 'new') {
+        setScreen('home');
+        return true;
+      }
+      return false;
+    });
+    return () => sub.remove();
+  }, [screen, project, busy, copying]);
+
+  const openProject = (p) => {
+    dirty.current = false;
+    setProject(p);
+    setResultUri(null);
+    setLog([]);
+    setSaved(false);
+    setScreen('project');
+  };
+
+  const createProject = async () => {
+    const s = checkSettings(newFps, newW, newH);
+    if (s.error) {
+      Alert.alert('Check settings', s.error);
+      return;
+    }
+    const p = {
+      id: 'p' + Date.now(),
+      name: newName.trim() || 'Untitled',
+      fps: newFps.trim(),
+      width: String(s.w),
+      height: String(s.h),
+      clips: [],
+      segs: [],
+      mode: 'off',
+      created: Date.now(),
+    };
+    try {
+      await saveProject(p);
+    } catch (e) {
+      Alert.alert('Could not create project', String(e));
+      return;
+    }
+    setNewName('');
+    openProject(p);
+  };
+
+  const deleteProject = (p) => {
+    Alert.alert('Delete project?', '"' + p.name + '" and its clips will be removed.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await FileSystem.deleteAsync(BASE + p.id + '/', { idempotent: true });
+          } catch (e) {}
+          setProjects(await loadProjects());
+        },
+      },
+    ]);
+  };
+
+  const clip = project && project.clips && project.clips.length > 0 ? project.clips[0] : null;
+  const clipUri = clip ? BASE + project.id + '/' + clip.file : null;
+  const segs = project ? project.segs : [];
+  const mode = project ? project.mode : 'off';
 
   const pickVideo = async () => {
+    if (copying || busy) return;
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Videos,
         allowsEditing: false,
         quality: 1,
       });
-      if (!result.canceled) {
-        const asset = result.assets[0];
-        setVideo(asset);
-        setResultUri(null);
-        setSaved(false);
-        setLog([]);
-        const len = asset.duration ? asset.duration / 1000 : 0;
-        if (len > 0) {
-          const third = len / 3;
-          setSegs([
-            { start: '0', end: third.toFixed(2), speed: '1' },
-            { start: third.toFixed(2), end: (third * 2).toFixed(2), speed: '0.25' },
-            { start: (third * 2).toFixed(2), end: len.toFixed(2), speed: '2' },
-          ]);
-        } else {
-          setSegs([{ start: '0', end: '5', speed: '1' }]);
-        }
+      if (result.canceled) return;
+      const asset = result.assets[0];
+      setCopying(true);
+      const file = 'clip_' + Date.now() + '.mp4';
+      await FileSystem.copyAsync({
+        from: asset.uri,
+        to: BASE + project.id + '/' + file,
+      });
+      if (clip) {
+        try {
+          await FileSystem.deleteAsync(BASE + project.id + '/' + clip.file, { idempotent: true });
+        } catch (e) {}
       }
+      const len = asset.duration ? asset.duration / 1000 : 0;
+      let newSegs;
+      if (len > 0) {
+        const third = len / 3;
+        newSegs = [
+          { start: '0', end: third.toFixed(2), speed: '1' },
+          { start: third.toFixed(2), end: (third * 2).toFixed(2), speed: '0.25' },
+          { start: (third * 2).toFixed(2), end: len.toFixed(2), speed: '2' },
+        ];
+      } else {
+        newSegs = [{ start: '0', end: '5', speed: '1' }];
+      }
+      change((p) => ({
+        ...p,
+        clips: [
+          {
+            file: file,
+            width: asset.width,
+            height: asset.height,
+            duration: len,
+            size: asset.fileSize || 0,
+          },
+        ],
+        segs: newSegs,
+      }));
+      setResultUri(null);
+      setSaved(false);
+      setLog([]);
     } catch (e) {
       Alert.alert('Error', String(e));
     }
+    setCopying(false);
   };
 
   const updateSeg = (i, field, value) => {
-    setSegs((old) => old.map((s, idx) => (idx === i ? { ...s, [field]: value } : s)));
+    change((p) => ({
+      ...p,
+      segs: p.segs.map((s, idx) => (idx === i ? { ...s, [field]: value } : s)),
+    }));
   };
 
   const addSeg = () => {
-    const len = video && video.duration ? video.duration / 1000 : 5;
+    const len = clip && clip.duration ? clip.duration : 5;
     const last = segs.length > 0 ? segs[segs.length - 1].end : '0';
-    setSegs((old) => [...old, { start: String(last), end: len.toFixed(2), speed: '1' }]);
+    change((p) => ({
+      ...p,
+      segs: [...p.segs, { start: String(last), end: len.toFixed(2), speed: '1' }],
+    }));
   };
 
   const removeSeg = (i) => {
-    setSegs((old) => old.filter((s, idx) => idx !== i));
+    change((p) => ({ ...p, segs: p.segs.filter((s, idx) => idx !== i) }));
   };
 
-  const seconds = video && video.duration ? (video.duration / 1000).toFixed(1) : '?';
-  const mb = video && video.fileSize ? (video.fileSize / 1048576).toFixed(1) : '?';
+  const setField = (field, value) => {
+    change((p) => ({ ...p, [field]: value }));
+  };
+
+  const seconds = clip && clip.duration ? clip.duration.toFixed(1) : '?';
+  const mb = clip && clip.size ? (clip.size / 1048576).toFixed(1) : '?';
 
   const saveToGallery = async () => {
     if (!resultUri || saving) return;
@@ -98,12 +301,21 @@ export default function App() {
   };
 
   const applyRemap = async () => {
-    if (!video || busy) return;
+    if (!project || !clip || busy || copying) return;
 
     if (segs.length === 0) {
       Alert.alert('No parts', 'Add at least one part.');
       return;
     }
+
+    const settings = checkSettings(project.fps, project.width, project.height);
+    if (settings.error) {
+      Alert.alert('Check project settings', settings.error);
+      return;
+    }
+    const fps = settings.fps;
+    const W = settings.w;
+    const H = settings.h;
 
     const nums = [];
     for (let i = 0; i < segs.length; i++) {
@@ -131,28 +343,18 @@ export default function App() {
     setSaved(false);
     const startedAt = Date.now();
     try {
-      const input = toPath(video.uri);
-      const output = input.replace(/[^/]+$/, 'velocity_remap_' + Date.now() + '.mp4');
-
-      // Find the video's frame rate
-      let fps = 30;
-      try {
-        const probe0 = await FFprobeKit.getMediaInformation(input);
-        const info0 = await probe0.getMediaInformation();
-        const streams = info0.getStreams() || [];
-        const vs = streams.find((st) => st.getType() === 'video');
-        const r = vs ? vs.getAverageFrameRate() : null;
-        if (r) {
-          const bits = String(r).split('/');
-          const val = bits.length === 2 ? parseFloat(bits[0]) / parseFloat(bits[1]) : parseFloat(bits[0]);
-          if (!isNaN(val) && val >= 10) {
-            fps = Math.min(Math.round(val), 60);
-          }
-        }
-      } catch (e) {
-        fps = 30;
+      if (dirty.current) {
+        await saveProject(project);
+        dirty.current = false;
       }
-      addLog('Frame rate: ' + fps + ' fps. Smoothing: ' + mode);
+      const input = toPath(clipUri);
+      const outDir = BASE + project.id + '/exports/';
+      await FileSystem.makeDirectoryAsync(outDir, { intermediates: true });
+      const output = toPath(outDir) + 'remap_' + Date.now() + '.mp4';
+
+      addLog(
+        'Project: ' + fps + ' fps, ' + W + ' x ' + H + '. Smoothing: ' + mode
+      );
 
       const parts = [];
       const labels = [];
@@ -174,7 +376,8 @@ export default function App() {
       const filter =
         parts.join(';') + ';' +
         labels.join('') + 'concat=n=' + nums.length + ':v=1:a=0[cat];' +
-        '[cat]scale=trunc(iw/2)*2:trunc(ih/2)*2[out]';
+        '[cat]scale=' + W + ':' + H + ':force_original_aspect_ratio=decrease,' +
+        'pad=' + W + ':' + H + ':(ow-iw)/2:(oh-ih)/2,setsar=1[out]';
 
       const cmd =
         '-y -i "' + input + '" -filter_complex "' + filter +
@@ -209,30 +412,180 @@ export default function App() {
     <TouchableOpacity
       key={key}
       style={[styles.modeBtn, mode === key && styles.modeActive]}
-      onPress={() => setMode(key)}
+      onPress={() => setField('mode', key)}
     >
       <Text style={styles.modeText}>{label}</Text>
     </TouchableOpacity>
   );
 
+  const settingsFields = (fps, w, h, onFps, onW, onH) => (
+    <View>
+      <Text style={styles.label}>Frame rate (1 to 120)</Text>
+      <TextInput
+        style={styles.inputFull}
+        value={fps}
+        keyboardType="decimal-pad"
+        onChangeText={onFps}
+      />
+      <View style={styles.chipRow}>
+        {FPS_BUTTONS.map((f) => (
+          <TouchableOpacity
+            key={f}
+            style={[styles.chip, fps === f && styles.modeActive]}
+            onPress={() => onFps(f)}
+          >
+            <Text style={styles.chipText}>{f}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      <Text style={styles.hint}>
+        Decimals work, like 23.976. Standard rates are safest for Alight Motion.
+      </Text>
+
+      <Text style={styles.label}>Resolution (width x height)</Text>
+      <View style={styles.row}>
+        <TextInput
+          style={[styles.input, styles.cell]}
+          value={w}
+          keyboardType="number-pad"
+          onChangeText={onW}
+        />
+        <Text style={styles.xSign}>x</Text>
+        <TextInput
+          style={[styles.input, styles.cell]}
+          value={h}
+          keyboardType="number-pad"
+          onChangeText={onH}
+        />
+      </View>
+      <View style={styles.chipRow}>
+        {RES_PRESETS.map((r) => (
+          <TouchableOpacity
+            key={r.label}
+            style={[styles.chip, w === r.w && h === r.h && styles.modeActive]}
+            onPress={() => {
+              onW(r.w);
+              onH(r.h);
+            }}
+          >
+            <Text style={styles.chipText}>{r.label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    </View>
+  );
+
+  // ---------- HOME SCREEN ----------
+  if (screen === 'home') {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.title}>Velocity</Text>
+        <TouchableOpacity style={styles.button} onPress={() => setScreen('new')}>
+          <Text style={styles.buttonText}>New project</Text>
+        </TouchableOpacity>
+
+        <ScrollView style={styles.info}>
+          <Text style={styles.label}>Your projects</Text>
+          {projects.length === 0 ? (
+            <Text style={styles.line}>No projects yet.</Text>
+          ) : null}
+          {projects.map((p) => (
+            <View key={p.id} style={styles.card}>
+              <TouchableOpacity style={{ flex: 1 }} onPress={() => openProject(p)}>
+                <Text style={styles.cardName}>{p.name}</Text>
+                <Text style={styles.cardInfo}>
+                  {p.fps} fps, {p.width} x {p.height},{' '}
+                  {p.clips && p.clips.length > 0 ? p.clips.length + ' clip' : 'no clip yet'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.xcell} onPress={() => deleteProject(p)}>
+                <Text style={styles.xText}>X</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
+          <View style={{ height: 80 }} />
+        </ScrollView>
+        <StatusBar style="light" />
+      </View>
+    );
+  }
+
+  // ---------- NEW PROJECT SCREEN ----------
+  if (screen === 'new') {
+    return (
+      <View style={styles.container}>
+        <View style={styles.topRow}>
+          <TouchableOpacity style={styles.backBtn} onPress={() => setScreen('home')}>
+            <Text style={styles.buttonText}>Back</Text>
+          </TouchableOpacity>
+          <Text style={styles.projTitle}>New project</Text>
+        </View>
+
+        <ScrollView keyboardShouldPersistTaps="handled">
+          <Text style={styles.label}>Name</Text>
+          <TextInput
+            style={styles.inputFull}
+            value={newName}
+            placeholder="My edit"
+            placeholderTextColor="#666"
+            onChangeText={setNewName}
+          />
+
+          {settingsFields(newFps, newW, newH, setNewFps, setNewW, setNewH)}
+
+          <TouchableOpacity style={[styles.button, styles.apply]} onPress={createProject}>
+            <Text style={styles.buttonText}>Create project</Text>
+          </TouchableOpacity>
+          <View style={{ height: 80 }} />
+        </ScrollView>
+        <StatusBar style="light" />
+      </View>
+    );
+  }
+
+  // ---------- PROJECT SCREEN ----------
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Velocity</Text>
+      <View style={styles.topRow}>
+        <TouchableOpacity style={styles.backBtn} onPress={goHome}>
+          <Text style={styles.buttonText}>Back</Text>
+        </TouchableOpacity>
+        <Text style={styles.projTitle} numberOfLines={1}>
+          {project ? project.name : ''}
+        </Text>
+      </View>
 
-      <TouchableOpacity style={styles.button} onPress={pickVideo}>
-        <Text style={styles.buttonText}>Pick a video</Text>
-      </TouchableOpacity>
+      <ScrollView keyboardShouldPersistTaps="handled">
+        <Text style={styles.label}>Project settings</Text>
+        {project
+          ? settingsFields(
+              project.fps,
+              project.width,
+              project.height,
+              (v) => setField('fps', v),
+              (v) => setField('width', v),
+              (v) => setField('height', v)
+            )
+          : null}
 
-      <ScrollView style={styles.info} keyboardShouldPersistTaps="handled">
-        {video ? (
+        <TouchableOpacity
+          style={[styles.button, (copying || busy) && styles.disabled]}
+          onPress={pickVideo}
+        >
+          <Text style={styles.buttonText}>
+            {copying ? 'Copying clip...' : clip ? 'Replace clip' : 'Pick a video'}
+          </Text>
+        </TouchableOpacity>
+
+        {clip ? (
           <View>
-            <Text style={styles.line}>
-              {mb} MB, {video.width} x {video.height}, {seconds} seconds
+            <Text style={[styles.line, { marginTop: 12 }]}>
+              {mb} MB, {clip.width} x {clip.height}, {seconds} seconds
             </Text>
             <Text style={styles.label}>Original</Text>
             <Video
               style={styles.player}
-              source={{ uri: video.uri }}
+              source={{ uri: clipUri }}
               useNativeControls
               resizeMode={ResizeMode.CONTAIN}
               isLooping
@@ -272,179 +625,4 @@ export default function App() {
             ))}
 
             <TouchableOpacity style={styles.addBtn} onPress={addSeg}>
-              <Text style={styles.buttonText}>+ Add part</Text>
-            </TouchableOpacity>
-
-            <Text style={styles.label}>Smoothing for slow parts</Text>
-            <View style={styles.modeRow}>
-              {modeButton('off', 'Off')}
-              {modeButton('blend', 'Blend')}
-              {modeButton('smooth', 'Smooth')}
-            </View>
-
-            <TouchableOpacity
-              style={[styles.button, styles.apply, busy && styles.disabled]}
-              onPress={applyRemap}
-            >
-              <Text style={styles.buttonText}>{busy ? 'Working...' : 'Apply time remap'}</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <Text style={styles.line}>No video picked yet.</Text>
-        )}
-
-        {log.map((line, i) => (
-          <Text key={i} style={styles.logLine}>
-            {line}
-          </Text>
-        ))}
-
-        {resultUri ? (
-          <View>
-            <Text style={styles.label}>Result</Text>
-            <Video
-              key={String(resultKey)}
-              style={styles.player}
-              source={{ uri: resultUri }}
-              useNativeControls
-              resizeMode={ResizeMode.CONTAIN}
-              isLooping
-            />
-            <TouchableOpacity
-              style={[styles.button, styles.saveBtn, (saving || saved) && styles.disabled]}
-              onPress={saveToGallery}
-            >
-              <Text style={styles.buttonText}>
-                {saving ? 'Saving...' : saved ? 'Saved to gallery' : 'Save to gallery'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
-
-        <View style={{ height: 80 }} />
-      </ScrollView>
-
-      <StatusBar style="light" />
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#111',
-    paddingTop: 70,
-    paddingHorizontal: 20,
-  },
-  title: {
-    color: '#fff',
-    fontSize: 28,
-    fontWeight: 'bold',
-    marginBottom: 24,
-  },
-  button: {
-    backgroundColor: '#3b82f6',
-    padding: 16,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  apply: {
-    marginTop: 14,
-    backgroundColor: '#22c55e',
-  },
-  saveBtn: {
-    backgroundColor: '#8b5cf6',
-  },
-  addBtn: {
-    backgroundColor: '#444',
-    padding: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  disabled: {
-    opacity: 0.4,
-  },
-  buttonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
-  info: {
-    marginTop: 24,
-  },
-  line: {
-    color: '#ddd',
-    fontSize: 16,
-    marginBottom: 10,
-  },
-  label: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginTop: 10,
-    marginBottom: 8,
-  },
-  player: {
-    width: '100%',
-    height: 240,
-    backgroundColor: '#000',
-    borderRadius: 8,
-    marginBottom: 14,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  cell: {
-    flex: 1,
-    marginRight: 8,
-  },
-  xcell: {
-    width: 36,
-    alignItems: 'center',
-  },
-  head: {
-    color: '#aaa',
-    fontSize: 13,
-  },
-  input: {
-    backgroundColor: '#222',
-    color: '#fff',
-    fontSize: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-  },
-  xText: {
-    color: '#f87171',
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
-  modeRow: {
-    flexDirection: 'row',
-    marginBottom: 4,
-  },
-  modeBtn: {
-    flex: 1,
-    backgroundColor: '#222',
-    padding: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    marginRight: 8,
-  },
-  modeActive: {
-    backgroundColor: '#3b82f6',
-  },
-  modeText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  logLine: {
-    color: '#facc15',
-    fontSize: 14,
-    marginBottom: 8,
-  },
-});
+              <Text style={styles.buttonText}>+ Add part</
