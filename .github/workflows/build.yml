@@ -36,6 +36,15 @@ jobs:
       - name: Generate Android files
         run: npx expo prebuild --platform android --clean
 
+      - name: Add splash color
+        run: |
+          mkdir -p android/app/src/main/res/values
+          cat > android/app/src/main/res/values/splash_color.xml <<'EOF'
+          <resources>
+            <color name="splashscreen_background">#FFFFFF</color>
+          </resources>
+          EOF
+
       - name: Build APK with Gradle
         run: |
           cd android
