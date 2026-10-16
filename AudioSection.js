@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Text, View, TouchableOpacity, Alert } from 'react-native';
+import { Text, View, TouchableOpacity, Alert, Image, ScrollView } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as DocumentPicker from 'expo-document-picker';
 import { Audio } from 'expo-av';
@@ -7,8 +7,11 @@ import { FFmpegKit, FFprobeKit, ReturnCode } from 'ffmpeg-kit-react-native';
 import styles from './styles';
 import { BASE, toPath } from './helpers';
 
+const WAVE_H = 160;
+
 export default function AudioSection({ project, clip, clipUri, change, busy, setBusy }) {
   const [playingId, setPlayingId] = useState(null);
+  const [waveOpenId, setWaveOpenId] = useState(null);
   const [message, setMessage] = useState('');
   const soundRef = useRef(null);
   const audios = project.audios || [];
@@ -65,6 +68,49 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
     } catch (e) {
       return 0;
     }
+  };
+
+  const toggleWave = async (a) => {
+    if (waveOpenId === a.id) {
+      setWaveOpenId(null);
+      return;
+    }
+    if (a.wave) {
+      setWaveOpenId(a.id);
+      return;
+    }
+    if (busy) return;
+    setBusy(true);
+    setMessage('Drawing waveform...');
+    try {
+      const width = Math.round(Math.min(4000, Math.max(800, (a.duration || 0) * 80)));
+      const waveFile = 'wave_' + a.id + '.png';
+      const outUri = BASE + project.id + '/' + waveFile;
+      const cmd =
+        '-y -i "' + toPath(BASE + project.id + '/' + a.file) + '"' +
+        ' -filter_complex "aformat=channel_layouts=mono,showwavespic=s=' +
+        width + 'x' + WAVE_H + ':colors=dodgerblue"' +
+        ' -frames:v 1 "' + toPath(outUri) + '"';
+      const session = await FFmpegKit.execute(cmd);
+      const rc = await session.getReturnCode();
+      if (!ReturnCode.isSuccess(rc)) {
+        const logs = await session.getAllLogsAsString();
+        setMessage('Could not draw the waveform. ' + String(logs).slice(-300));
+        setBusy(false);
+        return;
+      }
+      change((p) => ({
+        ...p,
+        audios: (p.audios || []).map((x) =>
+          x.id === a.id ? { ...x, wave: waveFile, waveW: width } : x
+        ),
+      }));
+      setWaveOpenId(a.id);
+      setMessage('');
+    } catch (e) {
+      setMessage('Error: ' + String(e));
+    }
+    setBusy(false);
   };
 
   const importAudio = async () => {
@@ -150,9 +196,15 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
         style: 'destructive',
         onPress: async () => {
           if (playingId === a.id) await stopSound();
+          if (waveOpenId === a.id) setWaveOpenId(null);
           try {
             await FileSystem.deleteAsync(BASE + project.id + '/' + a.file, { idempotent: true });
           } catch (e) {}
+          if (a.wave) {
+            try {
+              await FileSystem.deleteAsync(BASE + project.id + '/' + a.wave, { idempotent: true });
+            } catch (e) {}
+          }
           change((p) => ({ ...p, audios: (p.audios || []).filter((x) => x.id !== a.id) }));
         },
       },
@@ -164,22 +216,51 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
       <Text style={styles.label}>Audio</Text>
       {audios.length === 0 ? <Text style={styles.line}>No audio yet.</Text> : null}
       {audios.map((a) => (
-        <View key={a.id} style={styles.card}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.cardName} numberOfLines={1}>
-              {a.name}
-            </Text>
-            <Text style={styles.cardInfo}>{(a.duration || 0).toFixed(1)} s</Text>
+        <View
+          key={a.id}
+          style={{
+            backgroundColor: '#1c1c1c',
+            padding: 14,
+            borderRadius: 10,
+            marginBottom: 10,
+          }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cardName} numberOfLines={1}>
+                {a.name}
+              </Text>
+              <Text style={styles.cardInfo}>{(a.duration || 0).toFixed(1)} s</Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.chip, playingId === a.id && styles.modeActive, { marginBottom: 0 }]}
+              onPress={() => togglePlay(a)}
+            >
+              <Text style={styles.chipText}>{playingId === a.id ? 'Stop' : 'Play'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.chip, waveOpenId === a.id && styles.modeActive, { marginBottom: 0 }]}
+              onPress={() => toggleWave(a)}
+            >
+              <Text style={styles.chipText}>Wave</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.xcell} onPress={() => removeAudio(a)}>
+              <Text style={styles.xText}>X</Text>
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            style={[styles.chip, playingId === a.id && styles.modeActive, { marginBottom: 0 }]}
-            onPress={() => togglePlay(a)}
-          >
-            <Text style={styles.chipText}>{playingId === a.id ? 'Stop' : 'Play'}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.xcell} onPress={() => removeAudio(a)}>
-            <Text style={styles.xText}>X</Text>
-          </TouchableOpacity>
+
+          {waveOpenId === a.id && a.wave ? (
+            <ScrollView
+              horizontal
+              style={{ marginTop: 12, backgroundColor: '#0a0a0a', borderRadius: 8 }}
+            >
+              <Image
+                source={{ uri: BASE + project.id + '/' + a.wave }}
+                style={{ width: a.waveW || 800, height: WAVE_H }}
+                resizeMode="stretch"
+              />
+            </ScrollView>
+          ) : null}
         </View>
       ))}
 
