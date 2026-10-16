@@ -15,60 +15,22 @@ import * as FileSystem from 'expo-file-system';
 import { Video, ResizeMode } from 'expo-av';
 import { FFmpegKit, FFprobeKit, ReturnCode } from 'ffmpeg-kit-react-native';
 import styles from './styles';
-
-const BASE = FileSystem.documentDirectory + 'velocity/projects/';
-const FPS_BUTTONS = ['24', '25', '30', '60'];
-const RES_PRESETS = [
-  { label: '1080x1920', w: '1080', h: '1920' },
-  { label: '720x1280', w: '720', h: '1280' },
-  { label: '1080x1080', w: '1080', h: '1080' },
-  { label: '1920x1080', w: '1920', h: '1080' },
-];
-
-const toPath = (uri) => uri.replace('file://', '');
-
-function checkSettings(fpsText, wText, hText) {
-  const fps = parseFloat(fpsText);
-  const w = parseInt(wText, 10);
-  const h = parseInt(hText, 10);
-  if (isNaN(fps) || fps < 1 || fps > 120) {
-    return { error: 'Frame rate must be a number from 1 to 120.' };
-  }
-  if (isNaN(w) || isNaN(h) || w < 64 || h < 64 || w > 4096 || h > 4096) {
-    return { error: 'Width and height must be numbers from 64 to 4096.' };
-  }
-  return { fps: fps, w: Math.floor(w / 2) * 2, h: Math.floor(h / 2) * 2 };
-}
-
-async function loadProjects() {
-  try {
-    const info = await FileSystem.getInfoAsync(BASE);
-    if (!info.exists) return [];
-    const names = await FileSystem.readDirectoryAsync(BASE);
-    const list = [];
-    for (let i = 0; i < names.length; i++) {
-      try {
-        const txt = await FileSystem.readAsStringAsync(BASE + names[i] + '/project.json');
-        list.push(JSON.parse(txt));
-      } catch (e) {}
-    }
-    list.sort((a, b) => (b.updated || 0) - (a.updated || 0));
-    return list;
-  } catch (e) {
-    return [];
-  }
-}
-
-async function saveProject(p) {
-  await FileSystem.makeDirectoryAsync(BASE + p.id + '/', { intermediates: true });
-  const data = { ...p, updated: Date.now() };
-  await FileSystem.writeAsStringAsync(BASE + p.id + '/project.json', JSON.stringify(data));
-}
+import {
+  BASE,
+  toPath,
+  checkSettings,
+  defaultSegs,
+  loadProjects,
+  saveProject,
+} from './helpers';
+import SettingsFields from './SettingsFields';
+import { HomeScreen, NewProjectScreen } from './Screens';
 
 export default function App() {
   const [screen, setScreen] = useState('home');
   const [projects, setProjects] = useState([]);
   const [project, setProject] = useState(null);
+  const [activeId, setActiveId] = useState(null);
   const dirty = useRef(false);
 
   const [newName, setNewName] = useState('');
@@ -105,6 +67,12 @@ export default function App() {
     setProject((old) => fn(old));
   };
 
+  const resetResult = () => {
+    setResultUri(null);
+    setLog([]);
+    setSaved(false);
+  };
+
   const goHome = async () => {
     if (busy || copying) {
       Alert.alert('Please wait', 'Wait until the work is finished.');
@@ -117,9 +85,8 @@ export default function App() {
       dirty.current = false;
     }
     setProject(null);
-    setResultUri(null);
-    setLog([]);
-    setSaved(false);
+    setActiveId(null);
+    resetResult();
     setProjects(await loadProjects());
     setScreen('home');
   };
@@ -142,9 +109,8 @@ export default function App() {
   const openProject = (p) => {
     dirty.current = false;
     setProject(p);
-    setResultUri(null);
-    setLog([]);
-    setSaved(false);
+    setActiveId(null);
+    resetResult();
     setScreen('project');
   };
 
@@ -161,8 +127,6 @@ export default function App() {
       width: String(s.w),
       height: String(s.h),
       clips: [],
-      segs: [],
-      mode: 'off',
       created: Date.now(),
     };
     try {
@@ -191,13 +155,28 @@ export default function App() {
     ]);
   };
 
-  const clip = project && project.clips && project.clips.length > 0 ? project.clips[0] : null;
+  const clips = project ? project.clips : [];
+  const clip = clips.find((c) => c.id === activeId) || clips[0] || null;
   const clipUri = clip ? BASE + project.id + '/' + clip.file : null;
-  const segs = project ? project.segs : [];
-  const mode = project ? project.mode : 'off';
+  const segs = clip ? clip.segs : [];
+  const mode = clip ? clip.mode : 'off';
 
-  const pickVideo = async () => {
-    if (copying || busy) return;
+  const changeClip = (fn) => {
+    const id = clip.id;
+    change((p) => ({
+      ...p,
+      clips: p.clips.map((c) => (c.id === id ? fn(c) : c)),
+    }));
+  };
+
+  const selectClip = (id) => {
+    if (busy || copying) return;
+    setActiveId(id);
+    resetResult();
+  };
+
+  const addClip = async () => {
+    if (copying || busy || !project) return;
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Videos,
@@ -207,68 +186,73 @@ export default function App() {
       if (result.canceled) return;
       const asset = result.assets[0];
       setCopying(true);
-      const file = 'clip_' + Date.now() + '.mp4';
+      const stamp = Date.now();
+      const file = 'clip_' + stamp + '.mp4';
       await FileSystem.copyAsync({
         from: asset.uri,
         to: BASE + project.id + '/' + file,
       });
-      if (clip) {
-        try {
-          await FileSystem.deleteAsync(BASE + project.id + '/' + clip.file, { idempotent: true });
-        } catch (e) {}
-      }
       const len = asset.duration ? asset.duration / 1000 : 0;
-      let newSegs;
-      if (len > 0) {
-        const third = len / 3;
-        newSegs = [
-          { start: '0', end: third.toFixed(2), speed: '1' },
-          { start: third.toFixed(2), end: (third * 2).toFixed(2), speed: '0.25' },
-          { start: (third * 2).toFixed(2), end: len.toFixed(2), speed: '2' },
-        ];
-      } else {
-        newSegs = [{ start: '0', end: '5', speed: '1' }];
-      }
-      change((p) => ({
-        ...p,
-        clips: [
-          {
-            file: file,
-            width: asset.width,
-            height: asset.height,
-            duration: len,
-            size: asset.fileSize || 0,
-          },
-        ],
-        segs: newSegs,
-      }));
-      setResultUri(null);
-      setSaved(false);
-      setLog([]);
+      const newClip = {
+        id: 'c' + stamp,
+        file: file,
+        width: asset.width,
+        height: asset.height,
+        duration: len,
+        size: asset.fileSize || 0,
+        segs: defaultSegs(len),
+        mode: 'off',
+      };
+      change((p) => ({ ...p, clips: [...p.clips, newClip] }));
+      setActiveId(newClip.id);
+      resetResult();
     } catch (e) {
       Alert.alert('Error', String(e));
     }
     setCopying(false);
   };
 
+  const removeClip = (c) => {
+    if (busy || copying) return;
+    Alert.alert('Remove clip?', 'This clip and its remap parts will be removed.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await FileSystem.deleteAsync(BASE + project.id + '/' + c.file, { idempotent: true });
+          } catch (e) {}
+          change((p) => ({ ...p, clips: p.clips.filter((x) => x.id !== c.id) }));
+          if (clip && clip.id === c.id) setActiveId(null);
+          resetResult();
+        },
+      },
+    ]);
+  };
+
   const updateSeg = (i, field, value) => {
-    change((p) => ({
-      ...p,
-      segs: p.segs.map((s, idx) => (idx === i ? { ...s, [field]: value } : s)),
+    changeClip((c) => ({
+      ...c,
+      segs: c.segs.map((s, idx) => (idx === i ? { ...s, [field]: value } : s)),
     }));
   };
 
   const addSeg = () => {
     const len = clip && clip.duration ? clip.duration : 5;
     const last = segs.length > 0 ? segs[segs.length - 1].end : '0';
-    change((p) => ({
-      ...p,
-      segs: [...p.segs, { start: String(last), end: len.toFixed(2), speed: '1' }],
+    changeClip((c) => ({
+      ...c,
+      segs: [...c.segs, { start: String(last), end: len.toFixed(2), speed: '1' }],
     }));
   };
 
   const removeSeg = (i) => {
-    change((p) => ({ ...p, segs: p.segs.filter((s, idx) => idx !== i) }));
+    changeClip((c) => ({ ...c, segs: c.segs.filter((s, idx) => idx !== i) }));
+  };
+
+  const setMode = (key) => {
+    changeClip((c) => ({ ...c, mode: key }));
   };
 
   const setField = (field, value) => {
@@ -410,134 +394,37 @@ export default function App() {
     <TouchableOpacity
       key={key}
       style={[styles.modeBtn, mode === key && styles.modeActive]}
-      onPress={() => setField('mode', key)}
+      onPress={() => setMode(key)}
     >
       <Text style={styles.modeText}>{label}</Text>
     </TouchableOpacity>
   );
 
-  const settingsFields = (fps, w, h, onFps, onW, onH) => (
-    <View>
-      <Text style={styles.label}>Frame rate (1 to 120)</Text>
-      <TextInput
-        style={styles.inputFull}
-        value={fps}
-        keyboardType="decimal-pad"
-        onChangeText={onFps}
-      />
-      <View style={styles.chipRow}>
-        {FPS_BUTTONS.map((f) => (
-          <TouchableOpacity
-            key={f}
-            style={[styles.chip, fps === f && styles.modeActive]}
-            onPress={() => onFps(f)}
-          >
-            <Text style={styles.chipText}>{f}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-      <Text style={styles.hint}>
-        Decimals work, like 23.976. Standard rates are safest for Alight Motion.
-      </Text>
-
-      <Text style={styles.label}>Resolution (width x height)</Text>
-      <View style={styles.row}>
-        <TextInput
-          style={[styles.input, styles.cell]}
-          value={w}
-          keyboardType="number-pad"
-          onChangeText={onW}
-        />
-        <Text style={styles.xSign}>x</Text>
-        <TextInput
-          style={[styles.input, styles.cell]}
-          value={h}
-          keyboardType="number-pad"
-          onChangeText={onH}
-        />
-      </View>
-      <View style={styles.chipRow}>
-        {RES_PRESETS.map((r) => (
-          <TouchableOpacity
-            key={r.label}
-            style={[styles.chip, w === r.w && h === r.h && styles.modeActive]}
-            onPress={() => {
-              onW(r.w);
-              onH(r.h);
-            }}
-          >
-            <Text style={styles.chipText}>{r.label}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-    </View>
-  );
-
-  // ---------- HOME SCREEN ----------
   if (screen === 'home') {
     return (
-      <View style={styles.container}>
-        <Text style={styles.title}>Velocity</Text>
-        <TouchableOpacity style={styles.button} onPress={() => setScreen('new')}>
-          <Text style={styles.buttonText}>New project</Text>
-        </TouchableOpacity>
-
-        <ScrollView style={styles.info}>
-          <Text style={styles.label}>Your projects</Text>
-          {projects.length === 0 ? (
-            <Text style={styles.line}>No projects yet.</Text>
-          ) : null}
-          {projects.map((p) => (
-            <View key={p.id} style={styles.card}>
-              <TouchableOpacity style={{ flex: 1 }} onPress={() => openProject(p)}>
-                <Text style={styles.cardName}>{p.name}</Text>
-                <Text style={styles.cardInfo}>
-                  {p.fps} fps, {p.width} x {p.height},{' '}
-                  {p.clips && p.clips.length > 0 ? p.clips.length + ' clip' : 'no clip yet'}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.xcell} onPress={() => deleteProject(p)}>
-                <Text style={styles.xText}>X</Text>
-              </TouchableOpacity>
-            </View>
-          ))}
-          <View style={{ height: 80 }} />
-        </ScrollView>
-        <StatusBar style="light" />
-      </View>
+      <HomeScreen
+        projects={projects}
+        onNew={() => setScreen('new')}
+        onOpen={openProject}
+        onDelete={deleteProject}
+      />
     );
   }
 
-  // ---------- NEW PROJECT SCREEN ----------
   if (screen === 'new') {
     return (
-      <View style={styles.container}>
-        <View style={styles.topRow}>
-          <TouchableOpacity style={styles.backBtn} onPress={() => setScreen('home')}>
-            <Text style={styles.buttonText}>Back</Text>
-          </TouchableOpacity>
-          <Text style={styles.projTitle}>New project</Text>
-        </View>
-
-        <ScrollView keyboardShouldPersistTaps="handled">
-          <Text style={styles.label}>Name</Text>
-          <TextInput
-            style={styles.inputFull}
-            value={newName}
-            placeholder="My edit"
-            placeholderTextColor="#666"
-            onChangeText={setNewName}
-          />
-
-          {settingsFields(newFps, newW, newH, setNewFps, setNewW, setNewH)}
-
-          <TouchableOpacity style={[styles.button, styles.apply]} onPress={createProject}>
-            <Text style={styles.buttonText}>Create project</Text>
-          </TouchableOpacity>
-          <View style={{ height: 80 }} />
-        </ScrollView>
-        <StatusBar style="light" />
-      </View>
+      <NewProjectScreen
+        name={newName}
+        setName={setNewName}
+        fps={newFps}
+        setFps={setNewFps}
+        w={newW}
+        setW={setNewW}
+        h={newH}
+        setH={setNewH}
+        onBack={() => setScreen('home')}
+        onCreate={createProject}
+      />
     );
   }
 
@@ -555,24 +442,44 @@ export default function App() {
 
       <ScrollView keyboardShouldPersistTaps="handled">
         <Text style={styles.label}>Project settings</Text>
-        {project
-          ? settingsFields(
-              project.fps,
-              project.width,
-              project.height,
-              (v) => setField('fps', v),
-              (v) => setField('width', v),
-              (v) => setField('height', v)
-            )
-          : null}
+        {project ? (
+          <SettingsFields
+            fps={project.fps}
+            w={project.width}
+            h={project.height}
+            onFps={(v) => setField('fps', v)}
+            onW={(v) => setField('width', v)}
+            onH={(v) => setField('height', v)}
+          />
+        ) : null}
+
+        <Text style={styles.label}>Clips</Text>
+        {clips.length === 0 ? <Text style={styles.line}>No clips yet.</Text> : null}
+        {clips.map((c, i) => (
+          <View
+            key={c.id}
+            style={[
+              styles.card,
+              clip && c.id === clip.id && { borderWidth: 2, borderColor: '#3b82f6' },
+            ]}
+          >
+            <TouchableOpacity style={{ flex: 1 }} onPress={() => selectClip(c.id)}>
+              <Text style={styles.cardName}>Clip {i + 1}</Text>
+              <Text style={styles.cardInfo}>
+                {c.width} x {c.height}, {(c.duration || 0).toFixed(1)} s
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.xcell} onPress={() => removeClip(c)}>
+              <Text style={styles.xText}>X</Text>
+            </TouchableOpacity>
+          </View>
+        ))}
 
         <TouchableOpacity
           style={[styles.button, (copying || busy) && styles.disabled]}
-          onPress={pickVideo}
+          onPress={addClip}
         >
-          <Text style={styles.buttonText}>
-            {copying ? 'Copying clip...' : clip ? 'Replace clip' : 'Pick a video'}
-          </Text>
+          <Text style={styles.buttonText}>{copying ? 'Copying clip...' : '+ Add clip'}</Text>
         </TouchableOpacity>
 
         {clip ? (
@@ -582,6 +489,7 @@ export default function App() {
             </Text>
             <Text style={styles.label}>Original</Text>
             <Video
+              key={clip.id}
               style={styles.player}
               source={{ uri: clipUri }}
               useNativeControls
@@ -640,9 +548,7 @@ export default function App() {
               <Text style={styles.buttonText}>{busy ? 'Working...' : 'Apply time remap'}</Text>
             </TouchableOpacity>
           </View>
-        ) : (
-          <Text style={[styles.line, { marginTop: 12 }]}>No clip in this project yet.</Text>
-        )}
+        ) : null}
 
         {log.map((line, i) => (
           <Text key={i} style={styles.logLine}>
