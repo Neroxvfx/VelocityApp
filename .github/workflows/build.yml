@@ -47,6 +47,20 @@ jobs:
           </resources>
           EOF
 
+      - name: Extract native libraries on install
+        run: |
+          cat >> android/app/build.gradle <<'EOF'
+
+          android {
+              packagingOptions {
+                  jniLibs {
+                      useLegacyPackaging = true
+                  }
+              }
+          }
+          EOF
+          grep -n "useLegacyPackaging" android/app/build.gradle
+
       - name: Build APK with Gradle
         run: |
           cd android
