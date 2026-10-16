@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import {
-  StyleSheet,
   Text,
   View,
   TouchableOpacity,
@@ -15,6 +14,7 @@ import * as MediaLibrary from 'expo-media-library';
 import * as FileSystem from 'expo-file-system';
 import { Video, ResizeMode } from 'expo-av';
 import { FFmpegKit, FFprobeKit, ReturnCode } from 'ffmpeg-kit-react-native';
+import styles from './styles';
 
 const BASE = FileSystem.documentDirectory + 'velocity/projects/';
 const FPS_BUTTONS = ['24', '25', '30', '60'];
@@ -352,9 +352,7 @@ export default function App() {
       await FileSystem.makeDirectoryAsync(outDir, { intermediates: true });
       const output = toPath(outDir) + 'remap_' + Date.now() + '.mp4';
 
-      addLog(
-        'Project: ' + fps + ' fps, ' + W + ' x ' + H + '. Smoothing: ' + mode
-      );
+      addLog('Project: ' + fps + ' fps, ' + W + ' x ' + H + '. Smoothing: ' + mode);
 
       const parts = [];
       const labels = [];
@@ -625,4 +623,59 @@ export default function App() {
             ))}
 
             <TouchableOpacity style={styles.addBtn} onPress={addSeg}>
-              <Text style={styles.buttonText}>+ Add part</
+              <Text style={styles.buttonText}>+ Add part</Text>
+            </TouchableOpacity>
+
+            <Text style={styles.label}>Smoothing for slow parts</Text>
+            <View style={styles.modeRow}>
+              {modeButton('off', 'Off')}
+              {modeButton('blend', 'Blend')}
+              {modeButton('smooth', 'Smooth')}
+            </View>
+
+            <TouchableOpacity
+              style={[styles.button, styles.apply, busy && styles.disabled]}
+              onPress={applyRemap}
+            >
+              <Text style={styles.buttonText}>{busy ? 'Working...' : 'Apply time remap'}</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <Text style={[styles.line, { marginTop: 12 }]}>No clip in this project yet.</Text>
+        )}
+
+        {log.map((line, i) => (
+          <Text key={i} style={styles.logLine}>
+            {line}
+          </Text>
+        ))}
+
+        {resultUri ? (
+          <View>
+            <Text style={styles.label}>Result</Text>
+            <Video
+              key={String(resultKey)}
+              style={styles.player}
+              source={{ uri: resultUri }}
+              useNativeControls
+              resizeMode={ResizeMode.CONTAIN}
+              isLooping
+            />
+            <TouchableOpacity
+              style={[styles.button, styles.saveBtn, (saving || saved) && styles.disabled]}
+              onPress={saveToGallery}
+            >
+              <Text style={styles.buttonText}>
+                {saving ? 'Saving...' : saved ? 'Saved to gallery' : 'Save to gallery'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
+        <View style={{ height: 80 }} />
+      </ScrollView>
+
+      <StatusBar style="light" />
+    </View>
+  );
+}
