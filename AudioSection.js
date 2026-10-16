@@ -7,6 +7,7 @@ import {
   Image,
   ScrollView,
   TextInput,
+  Pressable,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as DocumentPicker from 'expo-document-picker';
@@ -20,6 +21,7 @@ const SPEED_CHIPS = ['0.5', '1.5', '2'];
 
 export default function AudioSection({ project, clip, clipUri, change, busy, setBusy }) {
   const [playingId, setPlayingId] = useState(null);
+  const [playPos, setPlayPos] = useState(0);
   const [waveOpenId, setWaveOpenId] = useState(null);
   const [speedOpenId, setSpeedOpenId] = useState(null);
   const [speedText, setSpeedText] = useState('1.5');
@@ -32,6 +34,7 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
     const s = soundRef.current;
     soundRef.current = null;
     setPlayingId(null);
+    setPlayPos(0);
     if (s) {
       try {
         await s.unloadAsync();
@@ -57,13 +60,16 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
     try {
       const created = await Audio.Sound.createAsync(
         { uri: BASE + project.id + '/' + a.file },
-        { shouldPlay: true }
+        { shouldPlay: true, progressUpdateIntervalMillis: 100 }
       );
       soundRef.current = created.sound;
       setPlayingId(a.id);
       created.sound.setOnPlaybackStatusUpdate((st) => {
-        if (st && st.didJustFinish) {
-          stopSound();
+        if (st && st.isLoaded) {
+          setPlayPos((st.positionMillis || 0) / 1000);
+          if (st.didJustFinish) {
+            stopSound();
+          }
         }
       });
     } catch (e) {
@@ -93,6 +99,79 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
     } catch (e) {
       return 44100;
     }
+  };
+
+  // ---------- beat markers ----------
+  const addBeat = (a, t) => {
+    change((p) => ({
+      ...p,
+      audios: (p.audios || []).map((x) =>
+        x.id === a.id
+          ? { ...x, beats: [...(x.beats || []), t].sort((m, n) => m - n) }
+          : x
+      ),
+    }));
+  };
+
+  const removeBeatAt = (a, idx) => {
+    change((p) => ({
+      ...p,
+      audios: (p.audios || []).map((x) =>
+        x.id === a.id ? { ...x, beats: (x.beats || []).filter((b, i) => i !== idx) } : x
+      ),
+    }));
+  };
+
+  const onWaveTap = (a, x) => {
+    const W = a.waveW || 800;
+    const dur = a.duration || 0;
+    if (dur <= 0) return;
+    const beats = a.beats || [];
+    let nearest = -1;
+    let nd = 1e9;
+    beats.forEach((b, i) => {
+      const d = Math.abs((b / dur) * W - x);
+      if (d < nd) {
+        nd = d;
+        nearest = i;
+      }
+    });
+    if (nearest >= 0 && nd < 14) {
+      removeBeatAt(a, nearest);
+    } else {
+      const t = Math.max(0, Math.min(dur, (x / W) * dur));
+      addBeat(a, Math.round(t * 100) / 100);
+    }
+  };
+
+  const markNow = async (a) => {
+    const s = soundRef.current;
+    if (!s || playingId !== a.id) {
+      Alert.alert('Press Play first', 'Play the audio, then tap Mark beat now on each beat.');
+      return;
+    }
+    try {
+      const st = await s.getStatusAsync();
+      if (st.isLoaded) {
+        addBeat(a, Math.round((st.positionMillis || 0) / 10) / 100);
+      }
+    } catch (e) {}
+  };
+
+  const clearBeats = (a) => {
+    Alert.alert('Clear beats?', 'All beat markers on "' + a.name + '" will be removed.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Clear',
+        style: 'destructive',
+        onPress: () => {
+          change((p) => ({
+            ...p,
+            audios: (p.audios || []).map((x) => (x.id === a.id ? { ...x, beats: [] } : x)),
+          }));
+        },
+      },
+    ]);
   };
 
   const toggleWave = async (a) => {
@@ -310,106 +389,168 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
     <View>
       <Text style={styles.label}>Audio</Text>
       {audios.length === 0 ? <Text style={styles.line}>No audio yet.</Text> : null}
-      {audios.map((a) => (
-        <View
-          key={a.id}
-          style={{
-            backgroundColor: '#1c1c1c',
-            padding: 14,
-            borderRadius: 10,
-            marginBottom: 10,
-          }}
-        >
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.cardName} numberOfLines={1}>
-                {a.name}
-              </Text>
-              <Text style={styles.cardInfo}>{(a.duration || 0).toFixed(1)} s</Text>
-            </View>
-            <TouchableOpacity style={styles.xcell} onPress={() => removeAudio(a)}>
-              <Text style={styles.xText}>X</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={{ flexDirection: 'row', marginTop: 10 }}>
-            <TouchableOpacity
-              style={[styles.chip, playingId === a.id && styles.modeActive, { marginBottom: 0 }]}
-              onPress={() => togglePlay(a)}
-            >
-              <Text style={styles.chipText}>{playingId === a.id ? 'Stop' : 'Play'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.chip, waveOpenId === a.id && styles.modeActive, { marginBottom: 0 }]}
-              onPress={() => toggleWave(a)}
-            >
-              <Text style={styles.chipText}>Wave</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.chip, speedOpenId === a.id && styles.modeActive, { marginBottom: 0 }]}
-              onPress={() => toggleSpeed(a)}
-            >
-              <Text style={styles.chipText}>Speed</Text>
-            </TouchableOpacity>
-          </View>
-
-          {waveOpenId === a.id && a.wave ? (
-            <ScrollView
-              horizontal
-              style={{ marginTop: 12, backgroundColor: '#0a0a0a', borderRadius: 8 }}
-            >
-              <Image
-                source={{ uri: BASE + project.id + '/' + a.wave }}
-                style={{ width: a.waveW || 800, height: WAVE_H }}
-                resizeMode="stretch"
-              />
-            </ScrollView>
-          ) : null}
-
-          {speedOpenId === a.id ? (
-            <View style={{ marginTop: 12 }}>
-              <Text style={styles.head}>Speed (0.05 to 50, any number)</Text>
-              <TextInput
-                style={[styles.inputFull, { marginTop: 6 }]}
-                value={speedText}
-                keyboardType="decimal-pad"
-                onChangeText={setSpeedText}
-              />
-              <View style={styles.chipRow}>
-                {SPEED_CHIPS.map((c) => (
-                  <TouchableOpacity
-                    key={c}
-                    style={[styles.chip, speedText === c && styles.modeActive]}
-                    onPress={() => setSpeedText(c)}
-                  >
-                    <Text style={styles.chipText}>{c}x</Text>
-                  </TouchableOpacity>
-                ))}
+      {audios.map((a) => {
+        const W = a.waveW || 800;
+        const dur = a.duration || 0;
+        const beats = a.beats || [];
+        return (
+          <View
+            key={a.id}
+            style={{
+              backgroundColor: '#1c1c1c',
+              padding: 14,
+              borderRadius: 10,
+              marginBottom: 10,
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cardName} numberOfLines={1}>
+                  {a.name}
+                </Text>
+                <Text style={styles.cardInfo}>
+                  {dur.toFixed(1)} s
+                  {beats.length > 0 ? ', ' + beats.length + ' beats' : ''}
+                </Text>
               </View>
-              <View style={styles.modeRow}>
-                <TouchableOpacity
-                  style={[styles.modeBtn, pitchMode === 'keep' && styles.modeActive]}
-                  onPress={() => setPitchMode('keep')}
-                >
-                  <Text style={styles.modeText}>Keep pitch</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.modeBtn, pitchMode === 'change' && styles.modeActive]}
-                  onPress={() => setPitchMode('change')}
-                >
-                  <Text style={styles.modeText}>Change pitch</Text>
-                </TouchableOpacity>
-              </View>
-              <TouchableOpacity
-                style={[styles.button, styles.apply, busy && styles.disabled]}
-                onPress={() => createSpeedCopy(a)}
-              >
-                <Text style={styles.buttonText}>Create new audio</Text>
+              <TouchableOpacity style={styles.xcell} onPress={() => removeAudio(a)}>
+                <Text style={styles.xText}>X</Text>
               </TouchableOpacity>
             </View>
-          ) : null}
-        </View>
-      ))}
+
+            <View style={{ flexDirection: 'row', marginTop: 10 }}>
+              <TouchableOpacity
+                style={[styles.chip, playingId === a.id && styles.modeActive, { marginBottom: 0 }]}
+                onPress={() => togglePlay(a)}
+              >
+                <Text style={styles.chipText}>{playingId === a.id ? 'Stop' : 'Play'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.chip, waveOpenId === a.id && styles.modeActive, { marginBottom: 0 }]}
+                onPress={() => toggleWave(a)}
+              >
+                <Text style={styles.chipText}>Wave</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.chip, speedOpenId === a.id && styles.modeActive, { marginBottom: 0 }]}
+                onPress={() => toggleSpeed(a)}
+              >
+                <Text style={styles.chipText}>Speed</Text>
+              </TouchableOpacity>
+            </View>
+
+            {waveOpenId === a.id && a.wave ? (
+              <View>
+                <ScrollView
+                  horizontal
+                  style={{ marginTop: 12, backgroundColor: '#0a0a0a', borderRadius: 8 }}
+                >
+                  <Pressable
+                    style={{ width: W, height: WAVE_H }}
+                    onPress={(e) => onWaveTap(a, e.nativeEvent.locationX)}
+                  >
+                    <Image
+                      pointerEvents="none"
+                      source={{ uri: BASE + project.id + '/' + a.wave }}
+                      style={{ width: W, height: WAVE_H }}
+                      resizeMode="stretch"
+                    />
+                    {dur > 0
+                      ? beats.map((b, i) => (
+                          <View
+                            key={'b' + i}
+                            pointerEvents="none"
+                            style={{
+                              position: 'absolute',
+                              left: (b / dur) * W - 1,
+                              top: 0,
+                              width: 2,
+                              height: WAVE_H,
+                              backgroundColor: '#facc15',
+                            }}
+                          />
+                        ))
+                      : null}
+                    {dur > 0 && playingId === a.id ? (
+                      <View
+                        pointerEvents="none"
+                        style={{
+                          position: 'absolute',
+                          left: (playPos / dur) * W - 1,
+                          top: 0,
+                          width: 2,
+                          height: WAVE_H,
+                          backgroundColor: '#f87171',
+                        }}
+                      />
+                    ) : null}
+                  </Pressable>
+                </ScrollView>
+                <Text style={styles.hint}>
+                  Tap the waveform to add a beat. Tap next to a beat to remove it.
+                </Text>
+                <View style={{ flexDirection: 'row' }}>
+                  <TouchableOpacity
+                    style={[styles.chip, { backgroundColor: '#ca8a04', marginBottom: 0 }]}
+                    onPress={() => markNow(a)}
+                  >
+                    <Text style={styles.chipText}>Mark beat now</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.chip, { marginBottom: 0 }]}
+                    onPress={() => clearBeats(a)}
+                  >
+                    <Text style={styles.chipText}>Clear beats</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : null}
+
+            {speedOpenId === a.id ? (
+              <View style={{ marginTop: 12 }}>
+                <Text style={styles.head}>Speed (0.05 to 50, any number)</Text>
+                <TextInput
+                  style={[styles.inputFull, { marginTop: 6 }]}
+                  value={speedText}
+                  keyboardType="decimal-pad"
+                  onChangeText={setSpeedText}
+                />
+                <View style={styles.chipRow}>
+                  {SPEED_CHIPS.map((c) => (
+                    <TouchableOpacity
+                      key={c}
+                      style={[styles.chip, speedText === c && styles.modeActive]}
+                      onPress={() => setSpeedText(c)}
+                    >
+                      <Text style={styles.chipText}>{c}x</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <View style={styles.modeRow}>
+                  <TouchableOpacity
+                    style={[styles.modeBtn, pitchMode === 'keep' && styles.modeActive]}
+                    onPress={() => setPitchMode('keep')}
+                  >
+                    <Text style={styles.modeText}>Keep pitch</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.modeBtn, pitchMode === 'change' && styles.modeActive]}
+                    onPress={() => setPitchMode('change')}
+                  >
+                    <Text style={styles.modeText}>Change pitch</Text>
+                  </TouchableOpacity>
+                </View>
+                <TouchableOpacity
+                  style={[styles.button, styles.apply, busy && styles.disabled]}
+                  onPress={() => createSpeedCopy(a)}
+                >
+                  <Text style={styles.buttonText}>Create new audio</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+          </View>
+        );
+      })}
 
       <TouchableOpacity
         style={[styles.button, busy && styles.disabled]}
