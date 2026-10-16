@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Text, View, TouchableOpacity, Alert } from 'react-native';
 import * as FileSystem from 'expo-file-system';
+import * as DocumentPicker from 'expo-document-picker';
 import { Audio } from 'expo-av';
 import { FFmpegKit, FFprobeKit, ReturnCode } from 'ffmpeg-kit-react-native';
 import styles from './styles';
@@ -55,6 +56,54 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
     }
   };
 
+  const getDuration = async (path) => {
+    try {
+      const probe = await FFprobeKit.getMediaInformation(path);
+      const info = await probe.getMediaInformation();
+      const d = parseFloat(info.getDuration());
+      return isNaN(d) ? 0 : d;
+    } catch (e) {
+      return 0;
+    }
+  };
+
+  const importAudio = async () => {
+    if (busy) return;
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'audio/*',
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled) return;
+      const asset = result.assets[0];
+      setBusy(true);
+      setMessage('Importing audio...');
+      await stopSound();
+      const stamp = Date.now();
+      const nameText = asset.name || 'Imported audio';
+      const m = nameText.match(/\.([a-zA-Z0-9]{1,5})$/);
+      const ext = m ? m[1].toLowerCase() : 'm4a';
+      const file = 'audio_' + stamp + '.' + ext;
+      const outUri = BASE + project.id + '/' + file;
+      await FileSystem.copyAsync({ from: asset.uri, to: outUri });
+      try {
+        await FileSystem.deleteAsync(asset.uri, { idempotent: true });
+      } catch (e) {}
+      const dur = await getDuration(toPath(outUri));
+      const item = {
+        id: 'a' + stamp,
+        file: file,
+        name: nameText.replace(/\.[a-zA-Z0-9]{1,5}$/, ''),
+        duration: dur,
+      };
+      change((p) => ({ ...p, audios: [...(p.audios || []), item] }));
+      setMessage('Done. Audio imported.');
+    } catch (e) {
+      setMessage('Error: ' + String(e));
+    }
+    setBusy(false);
+  };
+
   const extractAudio = async () => {
     if (!clip || busy) return;
     setBusy(true);
@@ -77,15 +126,7 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
         setBusy(false);
         return;
       }
-      let dur = 0;
-      try {
-        const probe = await FFprobeKit.getMediaInformation(output);
-        const info = await probe.getMediaInformation();
-        dur = parseFloat(info.getDuration());
-        if (isNaN(dur)) dur = 0;
-      } catch (e) {
-        dur = 0;
-      }
+      const dur = await getDuration(output);
       const idx = project.clips.findIndex((c) => c.id === clip.id);
       const item = {
         id: 'a' + stamp,
@@ -125,7 +166,9 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
       {audios.map((a) => (
         <View key={a.id} style={styles.card}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.cardName}>{a.name}</Text>
+            <Text style={styles.cardName} numberOfLines={1}>
+              {a.name}
+            </Text>
             <Text style={styles.cardInfo}>{(a.duration || 0).toFixed(1)} s</Text>
           </View>
           <TouchableOpacity
@@ -140,9 +183,16 @@ export default function AudioSection({ project, clip, clipUri, change, busy, set
         </View>
       ))}
 
+      <TouchableOpacity
+        style={[styles.button, busy && styles.disabled]}
+        onPress={importAudio}
+      >
+        <Text style={styles.buttonText}>Import audio file</Text>
+      </TouchableOpacity>
+
       {clip ? (
         <TouchableOpacity
-          style={[styles.button, busy && styles.disabled]}
+          style={[styles.addBtn, { marginTop: 10 }, busy && styles.disabled]}
           onPress={extractAudio}
         >
           <Text style={styles.buttonText}>Extract audio from selected clip</Text>
