@@ -16,6 +16,7 @@ import { FFmpegKit, FFprobeKit, ReturnCode } from 'ffmpeg-kit-react-native';
 export default function App() {
   const [video, setVideo] = useState(null);
   const [segs, setSegs] = useState([]);
+  const [mode, setMode] = useState('off');
   const [resultUri, setResultUri] = useState(null);
   const [resultKey, setResultKey] = useState(0);
   const [log, setLog] = useState([]);
@@ -101,18 +102,45 @@ export default function App() {
     setBusy(true);
     setLog([]);
     setResultUri(null);
+    const startedAt = Date.now();
     try {
       const input = toPath(video.uri);
       const output = input.replace(/[^/]+$/, 'velocity_remap_' + Date.now() + '.mp4');
+
+      // Find the video's frame rate
+      let fps = 30;
+      try {
+        const probe0 = await FFprobeKit.getMediaInformation(input);
+        const info0 = await probe0.getMediaInformation();
+        const streams = info0.getStreams() || [];
+        const vs = streams.find((st) => st.getType() === 'video');
+        const r = vs ? vs.getAverageFrameRate() : null;
+        if (r) {
+          const bits = String(r).split('/');
+          const val = bits.length === 2 ? parseFloat(bits[0]) / parseFloat(bits[1]) : parseFloat(bits[0]);
+          if (!isNaN(val) && val >= 10) {
+            fps = Math.min(Math.round(val), 60);
+          }
+        }
+      } catch (e) {
+        fps = 30;
+      }
+      addLog('Frame rate: ' + fps + ' fps. Smoothing: ' + mode);
 
       const parts = [];
       const labels = [];
       let expected = 0;
       nums.forEach((n, i) => {
-        parts.push(
+        let chain =
           '[0:v]trim=start=' + n.st + ':end=' + n.en +
-          ',setpts=(PTS-STARTPTS)/' + n.sp + '[v' + i + ']'
-        );
+          ',setpts=(PTS-STARTPTS)/' + n.sp;
+        if (n.sp < 1 && mode === 'blend') {
+          chain += ',minterpolate=fps=' + fps + ':mi_mode=blend';
+        } else if (n.sp < 1 && mode === 'smooth') {
+          chain += ',minterpolate=fps=' + fps + ':mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1';
+        }
+        chain += ',fps=' + fps + '[v' + i + ']';
+        parts.push(chain);
         labels.push('[v' + i + ']');
         expected += (n.en - n.st) / n.sp;
       });
@@ -125,7 +153,7 @@ export default function App() {
         '-y -i "' + input + '" -filter_complex "' + filter +
         '" -map "[out]" -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p "' + output + '"';
 
-      addLog('Applying time remap with ' + nums.length + ' part(s)...');
+      addLog('Working... this can take a while with Smooth.');
       const session = await FFmpegKit.execute(cmd);
       const rc = await session.getReturnCode();
       if (!ReturnCode.isSuccess(rc)) {
@@ -139,7 +167,8 @@ export default function App() {
       const probe = await FFprobeKit.getMediaInformation(output);
       const info = await probe.getMediaInformation();
       const dur = parseFloat(info.getDuration());
-      addLog('Done! Expected length: ' + expected.toFixed(2) + 's, actual: ' + dur.toFixed(2) + 's');
+      const took = ((Date.now() - startedAt) / 1000).toFixed(1);
+      addLog('Done in ' + took + 's. Expected length: ' + expected.toFixed(2) + 's, actual: ' + dur.toFixed(2) + 's');
 
       setResultUri('file://' + output);
       setResultKey((k) => k + 1);
@@ -148,6 +177,16 @@ export default function App() {
     }
     setBusy(false);
   };
+
+  const modeButton = (key, label) => (
+    <TouchableOpacity
+      key={key}
+      style={[styles.modeBtn, mode === key && styles.modeActive]}
+      onPress={() => setMode(key)}
+    >
+      <Text style={styles.modeText}>{label}</Text>
+    </TouchableOpacity>
+  );
 
   return (
     <View style={styles.container}>
@@ -208,6 +247,13 @@ export default function App() {
             <TouchableOpacity style={styles.addBtn} onPress={addSeg}>
               <Text style={styles.buttonText}>+ Add part</Text>
             </TouchableOpacity>
+
+            <Text style={styles.label}>Smoothing for slow parts</Text>
+            <View style={styles.modeRow}>
+              {modeButton('off', 'Off')}
+              {modeButton('blend', 'Blend')}
+              {modeButton('smooth', 'Smooth')}
+            </View>
 
             <TouchableOpacity
               style={[styles.button, styles.apply, busy && styles.disabled]}
@@ -336,6 +382,26 @@ const styles = StyleSheet.create({
   xText: {
     color: '#f87171',
     fontSize: 18,
+    fontWeight: 'bold',
+  },
+  modeRow: {
+    flexDirection: 'row',
+    marginBottom: 4,
+  },
+  modeBtn: {
+    flex: 1,
+    backgroundColor: '#222',
+    padding: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  modeActive: {
+    backgroundColor: '#3b82f6',
+  },
+  modeText: {
+    color: '#fff',
+    fontSize: 16,
     fontWeight: 'bold',
   },
   logLine: {
