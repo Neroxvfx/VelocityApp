@@ -10,6 +10,7 @@ import {
   Alert,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as MediaLibrary from 'expo-media-library';
 import { Video, ResizeMode } from 'expo-av';
 import { FFmpegKit, FFprobeKit, ReturnCode } from 'ffmpeg-kit-react-native';
 
@@ -21,6 +22,8 @@ export default function App() {
   const [resultKey, setResultKey] = useState(0);
   const [log, setLog] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   const addLog = (line) => setLog((old) => [...old, line]);
   const toPath = (uri) => uri.replace('file://', '');
@@ -36,6 +39,7 @@ export default function App() {
         const asset = result.assets[0];
         setVideo(asset);
         setResultUri(null);
+        setSaved(false);
         setLog([]);
         const len = asset.duration ? asset.duration / 1000 : 0;
         if (len > 0) {
@@ -71,6 +75,28 @@ export default function App() {
   const seconds = video && video.duration ? (video.duration / 1000).toFixed(1) : '?';
   const mb = video && video.fileSize ? (video.fileSize / 1048576).toFixed(1) : '?';
 
+  const saveToGallery = async () => {
+    if (!resultUri || saving) return;
+    setSaving(true);
+    try {
+      const perm = await MediaLibrary.requestPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert(
+          'Permission needed',
+          'Velocity needs permission to save to your gallery. Please allow it and try again.'
+        );
+        setSaving(false);
+        return;
+      }
+      await MediaLibrary.saveToLibraryAsync(resultUri);
+      setSaved(true);
+      Alert.alert('Saved', 'The video is now in your gallery.');
+    } catch (e) {
+      Alert.alert('Could not save', String(e));
+    }
+    setSaving(false);
+  };
+
   const applyRemap = async () => {
     if (!video || busy) return;
 
@@ -102,6 +128,7 @@ export default function App() {
     setBusy(true);
     setLog([]);
     setResultUri(null);
+    setSaved(false);
     const startedAt = Date.now();
     try {
       const input = toPath(video.uri);
@@ -283,6 +310,14 @@ export default function App() {
               resizeMode={ResizeMode.CONTAIN}
               isLooping
             />
+            <TouchableOpacity
+              style={[styles.button, styles.saveBtn, (saving || saved) && styles.disabled]}
+              onPress={saveToGallery}
+            >
+              <Text style={styles.buttonText}>
+                {saving ? 'Saving...' : saved ? 'Saved to gallery' : 'Save to gallery'}
+              </Text>
+            </TouchableOpacity>
           </View>
         ) : null}
 
@@ -316,6 +351,9 @@ const styles = StyleSheet.create({
   apply: {
     marginTop: 14,
     backgroundColor: '#22c55e',
+  },
+  saveBtn: {
+    backgroundColor: '#8b5cf6',
   },
   addBtn: {
     backgroundColor: '#444',
