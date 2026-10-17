@@ -13,6 +13,8 @@ export default function TimeBar({ playhead, fps, onJump, onStep, onZoom }) {
       <Text style={styles.chipText}>{label}</Text>
     </TouchableOpacity>
   );
+  const helpText =
+    '|< and >| jump to keyframes, or beats and clip edges. < and > step one frame. - and + zoom.';
   return (
     <View style={{ marginTop: 12, marginBottom: 8 }}>
       <Text style={{ color: '#fff', fontSize: 22, fontWeight: 'bold' }}>
@@ -29,9 +31,7 @@ export default function TimeBar({ playhead, fps, onJump, onStep, onZoom }) {
         {btn('-', () => onZoom(-1), 'zo')}
         {btn('+', () => onZoom(1), 'zi')}
       </View>
-      <Text style={styles.hint}>
-        |< and >| jump to keyframes, or beats and clip edges. < and > step one frame. - and + zoom.
-      </Text>
+      <Text style={styles.hint}>{helpText}</Text>
     </View>
   );
 }
